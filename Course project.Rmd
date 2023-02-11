@@ -1,0 +1,274 @@
+---
+title: "Supervised Learning Model"
+subtitle: "Human Activity Recognition"
+author: "Phong Trang Tran Thanh"
+date: today
+date-format: long
+format:
+  html:
+    fontsize:  10pt
+margin-top:    0.75in
+margin-right:  0.75in
+margin-bottom: 1in
+margin-left:   0.75in
+fig-width:     10
+fig-height:    7.25
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Overview
+
+## Data description
+
+This project examine the Weight Lifting Exercise Data provided by
+Velloso et al. (2013).They used the wearable devices to measure the
+acceleration of 6 participants to see if the participants were doing the
+exercises correctly. The accelerometers on the belt, forearm, arm, and
+dumbbell of 6 participants provide information on the exercise
+movements. There are 4 classes of the labels: A, B, C, and D; only class
+A is the correct movement while other classes corresponds to common
+mistakes of the training. Detailed description of the data can be found
+[here](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har#:~:text=Documento-,Weight%20Lifting%20Exercises%20Dataset,-This%20human%20activity).
+\n 
+
+Basically the data contain a list of variables provided by
+accelerometers on X, Y and Z dimension while the "class" variable tells
+if a given observation is of correct or incorrect training. \n  The
+training data for this project are available here:
+[pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+\n The test data are available here:
+[pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+## The project goal
+
+This project aims to use data provided by the accelerators to build a
+supervised learning model that predicts the outcome of correct/incorrect
+training movements. There are two models built to validate the prediction outcome: 
+1. Random Forest model
+2. Support Vector machine (SVM)
+The below sections include:
+
+-   Model construction
+-   Cross validation
+-   Test the model with 20 testing samples \
+# Data Preprocessing
+
+```{r warning = FALSE}
+#| output: false
+#Load the needed library
+library(ggplot2)
+library(caret)
+library(dplyr)
+library(rpart)
+library(randomForest)
+library(kernlab)
+library(kableExtra)
+library(e1071)
+library(data.table)
+```
+
+```{r}
+#Download and load the data
+url1 = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url2 = 'http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+filename1 = "pml-training.csv"
+filename2 = "pml-testing.csv"
+download.file(url1, filename1)
+download.file(url2, filename2)
+training = read.csv("pml-training.csv", na.strings = c("", "NA", "#DIV/0!"))
+testing = read.csv("pml-testing.csv"
+                   , na.strings = c("", "NA", "#DIV/0!"))
+```
+
+```{r}
+#| label: tbl-summary
+#| tbl-cap: "dimension of the training and testing dataset"
+training_data<- dim(training)
+testing_data <- dim(testing)
+dim_table <- rbind(training_data, testing_data)
+colnames(dim_table) <- c("Rows", "Columns")
+knitr::kable(dim_table)
+```
+
+```{r}
+#| label: fig-plot-classe
+#| fig-cap: "Number of observations in each classe"
+par(bg = "#EEECEE")
+barplot(table(training$classe), col = c("#E0BBE4", "#957DAD", "#D291BC", "#FEC8D8", "#FFDFD3"))
+```
+
+The data set is skewed toward A class and this may lead the model to be
+biased toward A. However, according to the data code book, this difference does not affect the data analysis due to its consistency of the rest of the labels. 
+
+```{r}
+#Split the data into train set and validation set
+set.seed(123456)
+inTrain = createDataPartition(training$classe, p = 0.8, list = FALSE)
+Train = training[inTrain, ]
+Validation = training[-inTrain, ]
+dim(Train)
+```
+
+## Feature selection for modeling
+
+This section checks if a predictor has little or no impact on the
+response variable: - First, Near Zero Variance technique is used to
+remove little-to-no impact variables. Then, descriptive columns, such as
+column names, ID numbers, or other meta-data, may not be directly
+relevant to the analysis and can be excluded as well. According to the
+data codebook, these descriptive variables are
+`X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp`.
+
+```{r}
+#Exclude the descriptive predictors
+descriptcol <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+    "cvtd_timestamp", "new_window", "num_window")
+Train = Train[,!names(Train) %in% descriptcol]
+Validation = Validation[,!names(Validation) %in% descriptcol]
+# Check for near zero variance predictors and drop them if necessary
+nonzerocol = nearZeroVar(Train)
+Train = Train[, -nonzerocol]
+Validation=Validation[,-nonzerocol]
+```
+
+-   Secondly, there are some measured statistics which are the same for
+    all rows. These numbers need to be removed also.
+
+```{r}
+# Grab the pattern of unneeded columns
+unneededColPattern = "kurtosis_|skewness_|max_|min_|amplitude_|avg_|stddev_|var_"
+# Removed the columns containing the patterns
+excludePattern <- function (tdata, unneededColPattern) {
+  exdata <- tdata[, -grep(unneededColPattern, colnames(tdata))]
+  exdata
+}
+Train = excludePattern(Train, unneededColPattern)
+Validation = excludePattern(Validation, unneededColPattern)
+```
+
+-   Finally, we make sure that there is no column that contains more
+    than 50% percent NA over its total length
+
+```{r}
+countlength = sapply(Train, function(x) {
+    sum(!(is.na(x) | x == ""))
+})
+nullCol = names(countlength[countlength < 0.5 * length(Train$classe)])
+Train = Train[, !names(Train) %in% nullCol]
+Validation= Validation[, !names(Validation) %in% nullCol]
+```
+
+```{r}
+#| label: tbl-train-clean
+#| tbl-cap: "dimension of the training data after Feature Selection"
+dim_table= data.frame(rows=dim(Train)[1],columns=dim(Train)[2])
+knitr::kable(dim_table)
+```
+
+After feature selection, the columns has reduced its size to 53. 
+
+#Model Training and Validation 
+
+## Training the model using Random Forest
+
+```{r}
+rfModel <- randomForest(as.factor(classe)~., data=Train)
+# Summary of the model
+rfModel
+```
+### Checking the error rate for number of trees
+```{r}
+#| label: fig-tree-err
+#| fig-cap: "Number of trees vs Error plot"
+oobData = as.data.table(plot(rfModel))
+oobData[, trees := .I]
+oobData2 = melt(oobData, id.vars = "trees")
+setnames(oobData2, "value", "error")
+ggplot(data = oobData2, aes(x = trees, y = error, color = variable)) + geom_line()
+```
+- As @fig-tree-err shows that the optimal number of trees are 200, now the model is retrained with **200 trees**
+```{r}
+rfModel <- randomForest(as.factor(classe)~., data=Train, ntree =200)
+# Summary of the new model
+rfModel
+```
+```{r}
+varImpPlot(rfModel)
+```
+
+### Validate the model
+
+```{r}
+#| label: tbl-model-validation
+#| tbl-cap: "Summary of the model validation"
+predictions = predict(rfModel, newdata = Validation)
+#Ensure the same level
+Validation$classe = factor(Validation$classe, levels = levels(predictions))
+confusion_matrix = confusionMatrix(predictions,Validation$classe)
+model_table <- data.frame(
+  Model = "Random Forest",
+  `Number of Trees` = rfModel$ntree,
+  `Out-of-Bag Error` = rfModel$err.rate[rfModel$ntree],
+  `Accuracy` = confusion_matrix$overall[1],
+  `Kappa` = confusion_matrix$overall[2]
+)
+kable(model_table, caption = "Random Forest Model Summary", row.names = FALSE)
+```
+
+```{r}
+#| label: fig-rf-CM
+#| tbl-cap: "Confusion Matrix of the model built by Random Forest"
+#Plot the confusion matrix
+confusion_df = as.data.frame(confusion_matrix$table)
+ggplot(confusion_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "#EEECEE") +
+  scale_fill_gradient(low = "white", high = "#D291BC") +
+  geom_text(aes(label = Freq), color = "black", size = 6) +
+  labs(title = paste("Confusion Matrix Random Forest: Accuracy =", round(confusion_matrix$overall['Accuracy'], 4))) +
+  xlab("Reference") +
+  ylab("Prediction") +
+  theme_minimal()
+```
+## Training the model using SVM
+```{r}
+svmModel = svm(as.factor(classe) ~. , data=Train)
+#prediction
+svmPredictions <- predict(svmModel, newdata= Validation)
+# Confusion matrix
+cmSVM <- confusionMatrix(svmPredictions, Validation$classe)
+```
+```{r}
+#| label: fig-SVM-CM
+#| tbl-cap: "Confusion Matrix of the model built by SVM"
+#Plot the confusion matrix
+confusion_df2 = as.data.frame(cmSVM$table)
+ggplot(confusion_df2, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "#EEECEE") +
+  scale_fill_gradient(low = "white", high = "#957DAD") +
+  geom_text(aes(label = Freq), color = "black", size = 6) +
+  labs(title = paste("Confusion Matrix: Accuracy =", round(confusion_matrix$overall['Accuracy'], 4))) +
+  xlab("Reference") +
+  ylab("Prediction") +
+  theme_minimal()
+```
+## Predicting the result on the Test data
+### Prediction made by the Random Forest Model
+```{r}
+#Select the columns that was used to train the model, except classe because there was no classe column in the testing data
+namecol=colnames(Train)[!colnames(Train) %in% c("classe")]
+testing2=testing[,namecol]
+rfPredictions <- predict(rfModel, newdata = testing2)
+rfPredictions
+```
+### Prediction made by the SVM Model
+```{r}
+svmPrediction <- predict(svmModel, newdata = testing2)
+svmPrediction
+```
+
